@@ -1,0 +1,113 @@
+name: Check Rust Code
+on:
+  push:
+    paths:
+      - "**/*.rs"
+
+jobs:
+  check_cellnoor-schema:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Cache cargo files
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+          cache-workspace-crates: true
+
+      - name: Install diesel-cli
+        run: cargo install diesel_cli --no-default-features --features postgres
+
+      - name: Check schema
+        working-directory: crates/cellnoor-schema
+        run: diesel setup --database-url postgres://postgres@localhost/postgres --locked-schema
+
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -Dwarnings
+      CELLNOOR_GENERATE_SCHEMA: false
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Cache cargo files
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+          cache-workspace-crates: true
+
+      - name: Install diesel-cli
+        run: cargo install diesel_cli --no-default-features --features postgres
+
+      - name: Lint
+        run: cargo clippy --workspace --all-features
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Cache cargo files
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+          cache-workspace-crates: true
+
+      - name: Install nightly toolchain
+        run: rustup component add --toolchain nightly-2025-11-24 rustfmt # This is updated weekly-ish
+
+      - name: Format
+        run: cargo +nightly-2025-11-24 fmt -- --check
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+    env:
+      CELLNOOR_CONFIG_DIR: .
+      CELLNOOR_GENERATE_SCHEMA: false
+      CELLNOOR_DB_ROOT_USER: postgres
+      CELLNOOR_DB_ROOT_PASSWORD: ""
+      CELLNOOR_API_DB_PASSWORD: ""
+      CELLNOOR_UI_DB_PASSWORD: ""
+      CELLNOOR_DB_HOST: localhost
+      CELLNOOR_DB_PORT: 5432
+      CELLNOOR_DB_NAME: postgres
+      CELLNOOR_API_KEY_PREFIX_LENGTH: 8
+      CELLNOOR_API_HOST: localhost
+      CELLNOOR_API_PORT: 8000
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Cache cargo files
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+          cache-workspace-crates: true
+
+      - name: Install diesel-cli
+        run: cargo install diesel_cli --no-default-features --features postgres
+
+      - name: Test
+        run: |
+          mv initial_data.sample.json cellnoor-api/initial_data
+          cargo test --workspace
