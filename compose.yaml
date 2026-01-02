@@ -1,0 +1,141 @@
+# This is the base compose file. Merge this with one of compose.dev.yaml of compose.prod.yaml to produce a running
+# application with the following command:
+# docker compose --file compose.yaml --file compose.dev.yaml
+services:
+  &db_host postgres:
+    image: postgres:18-alpine
+    restart: always
+    user: &db_root_user postgres
+    secrets:
+      - db_root_password
+      - db_name
+    environment:
+      POSTGRES_USER: *db_root_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_root_password
+      POSTGRES_DB_FILE: /run/secrets/db_name
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    expose:
+      - &db_port 5432
+    healthcheck:
+      test: pg_isready --dbname $(cat /run/secrets/db_name) || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  &api_host cellnoor-api:
+    build:
+      context: .
+      dockerfile: cellnoor-api/Dockerfile
+      target: final
+      args:
+        UID: &uid "10001"
+      tags:
+        - ghcr.io/demhadais/cellnoor-api:latest
+    environment:
+      DB_ROOT_USER: *db_root_user
+      DB_HOST: *db_host
+      DB_PORT: *db_port
+      API_KEY_PREFIX_LENGTH: &api_key_prefix_length 8
+      PORT: &api_port 80
+    expose:
+      - *api_port
+    secrets:
+      - source: db_root_password
+        uid: *uid
+      - source: cellnoor_api_db_password
+        uid: *uid
+      - source: cellnoor_ui_db_password
+        uid: *uid
+      - source: db_name
+        uid: *uid
+      - source: initial_data
+        uid: *uid
+    volumes:
+      - logs:/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: curl http://localhost/api/health || exit 1
+      interval: 5s
+      start_period: 10s
+      start_interval: 1s
+      timeout: 5s
+      retries: 10
+  &ui_host cellnoor-ui:
+    build:
+      context: .
+      dockerfile: cellnoor-ui/Dockerfile
+      target: final
+      tags:
+        - ghcr.io/demhadais/cellnoor-ui:latest
+    environment:
+      IN_DOCKER: "true"
+      DB_HOST: *db_host
+      DB_PORT: *db_port
+      PUBLIC_URL: ${CELLNOOR_PUBLIC_URL:?}
+      API_KEY_PREFIX_LENGTH: *api_key_prefix_length
+      PORT: &ui_port 80
+    depends_on:
+      cellnoor-api:
+        condition: service_healthy
+    healthcheck:
+      test: curl http://localhost/health || exit 1
+      interval: 5s
+      start_period: 5s
+      start_interval: 1s
+      timeout: 1s
+      retries: 5
+    secrets:
+      - source: cellnoor_ui_db_password
+        uid: *uid
+      - source: db_name
+        uid: *uid
+      - source: microsoft_entra_client_id
+        uid: *uid
+      - source: microsoft_entra_client_secret
+        uid: *uid
+      - source: microsoft_entra_tenant
+        uid: *uid
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      PUBLIC_URL: ${CELLNOOR_PUBLIC_URL:?}
+      API_HOST: *api_host
+      API_PORT: *api_port
+      UI_HOST: *ui_host
+      UI_PORT: *ui_port
+    restart: always
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - $PWD/caddy:/etc/caddy
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      cellnoor-ui:
+        condition: service_healthy
+volumes:
+  logs:
+  caddy-data:
+  caddy-config:
+secrets:
+  db_root_password:
+    environment: CELLNOOR_DB_ROOT_PASSWORD
+  cellnoor_api_db_password:
+    environment: CELLNOOR_API_DB_PASSWORD
+  cellnoor_ui_db_password:
+    environment: CELLNOOR_UI_DB_PASSWORD
+  db_name:
+    environment: CELLNOOR_DB_NAME
+  microsoft_entra_client_id:
+    environment: CELLNOOR_MICROSOFT_ENTRA_CLIENT_ID
+  microsoft_entra_client_secret:
+    environment: CELLNOOR_MICROSOFT_ENTRA_CLIENT_SECRET
+  microsoft_entra_tenant:
+    environment: CELLNOOR_MICROSOFT_ENTRA_TENANT
+  initial_data:
+    file: ${CELLNOOR_INITIAL_DATA_PATH:?}
